@@ -11,46 +11,64 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
 
 import com.example.pagos_service.model.Pago;
-import com.example.pagos_service.repository.PagoRepository;
+import com.example.pagos_service.messaging.PaymentRetryPublisher;
+import com.example.pagos_service.service.PagoService;
 
 @RestController
 @RequestMapping("/pagos")
 public class PagoController {
 
     private static final Logger logger = LoggerFactory.getLogger(PagoController.class);
-    private final PagoRepository repo;
+    private final PagoService pagoService;
+    private final PaymentRetryPublisher paymentRetryPublisher;
 
-    public PagoController(PagoRepository repo){
-        this.repo = repo;
+    public PagoController(PagoService pagoService, PaymentRetryPublisher paymentRetryPublisher){
+        this.pagoService = pagoService;
+        this.paymentRetryPublisher = paymentRetryPublisher;
     }
 
     @PostMapping("/procesar")
     public ResponseEntity<Map<String, Object>> procesarPago(@RequestBody Pago pago){
         try {
-            Pago savedPago = repo.save(pago);
+            Pago savedPago = pagoService.procesarPago(pago);
             logger.info("Pago procesado correctamente. id={}, ordenId={}, monto={}",
                     savedPago.getId(), savedPago.getOrdenId(), savedPago.getMonto());
-            return ResponseEntity.status(HttpStatus.CREATED).body(buildResponse(true, "Pago procesado correctamente", savedPago));
+            return ResponseEntity.status(HttpStatus.CREATED)
+                    .body(buildResponse(true, "Pago procesado correctamente", savedPago));
+        } catch (ResponseStatusException exception) {
+            publishRetryOnServerError(pago, exception);
+            throw exception;
         } catch (Exception exception) {
-            logger.error("Error al procesar pago. ordenId={}, monto={}", pago.getOrdenId(), pago.getMonto(), exception);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(buildResponse(false, "No se pudo procesar el pago", null));
+            publishRetryJob(pago, exception);
+            throw exception;
         }
     }
 
     @GetMapping("/{id}")
-    public Pago obtenerPago(@PathVariable String id){
-        return repo.findById(id).orElse(null);
+    public ResponseEntity<Pago> obtenerPago(@PathVariable String id){
+        return ResponseEntity.ok(pagoService.obtenerPagoPorId(id));
+    }
+
+    @GetMapping("/orden/{id}")
+    public List<Pago> obtenerPagosPorOrden(@PathVariable("id") String ordenId){
+        return pagoService.obtenerPagosPorOrden(ordenId);
     }
 
     @GetMapping
     public List<Pago> obtenerPagos(){
-        return repo.findAll();
+        return pagoService.obtenerPagos();
+    }
+
+    @PutMapping("/{id}/reembolso")
+    public ResponseEntity<Pago> reembolsarPago(@PathVariable String id){
+        return ResponseEntity.ok(pagoService.reembolsarPago(id));
     }
 
     private Map<String, Object> buildResponse(boolean success, String message, Object data) {
@@ -59,5 +77,17 @@ public class PagoController {
         response.put("message", message);
         response.put("data", data);
         return response;
+    }
+
+    private void publishRetryOnServerError(Pago pago, ResponseStatusException exception) {
+        if (exception.getStatusCode().is5xxServerError()) {
+            publishRetryJob(pago, exception);
+        }
+    }
+
+    private void publishRetryJob(Pago pago, Exception exception) {
+        logger.warn("Publishing payment retry job after create failure. ordenId={}, error={}",
+                pago != null ? pago.getOrdenId() : null, exception.getMessage());
+        paymentRetryPublisher.publish(pago);
     }
 }

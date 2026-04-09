@@ -10,6 +10,7 @@ public class Pago {
     private String id;
     private String ordenId;
     private double monto;
+    private String estado;
 
     public String getId(){
         return id;
@@ -33,5 +34,13 @@ public class Pago {
 
     public void setMonto(double monto){
         this.monto = monto;
+    }
+
+    public String getEstado() {
+        return estado;
+    }
+
+    public void setEstado(String estado) {
+        this.estado = estado;
     }
 }
