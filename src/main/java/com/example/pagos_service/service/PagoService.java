@@ -6,6 +6,12 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
+import com.example.pagos_service.chain.ApplyPaymentHandler;
+import com.example.pagos_service.chain.PaymentContext;
+import com.example.pagos_service.chain.PaymentHandler;
+import com.example.pagos_service.chain.ValidateOrderExistsHandler;
+import com.example.pagos_service.chain.ValidatePaymentAmountHandler;
+import com.example.pagos_service.chain.ValidateSaldoRestanteHandler;
 import com.example.pagos_service.model.Pago;
 import com.example.pagos_service.repository.PagoRepository;
 
@@ -13,17 +19,25 @@ import com.example.pagos_service.repository.PagoRepository;
 public class PagoService {
 
     private final PagoRepository pagoRepository;
+    private final PaymentHandler paymentValidationChain;
 
-    public PagoService(PagoRepository pagoRepository) {
+    public PagoService(PagoRepository pagoRepository,
+            ValidateOrderExistsHandler validateOrderExistsHandler,
+            ValidateSaldoRestanteHandler validateSaldoRestanteHandler,
+            ValidatePaymentAmountHandler validatePaymentAmountHandler,
+            ApplyPaymentHandler applyPaymentHandler) {
         this.pagoRepository = pagoRepository;
+        validateOrderExistsHandler
+                .setNext(validateSaldoRestanteHandler)
+                .setNext(validatePaymentAmountHandler)
+                .setNext(applyPaymentHandler);
+        this.paymentValidationChain = validateOrderExistsHandler;
     }
 
     public Pago procesarPago(Pago pago) {
-        validatePago(pago);
-        pago.setId(null);
-        pago.setOrdenId(pago.getOrdenId().trim());
-        pago.setEstado("procesado");
-        return pagoRepository.save(pago);
+        PaymentContext context = new PaymentContext(pago);
+        paymentValidationChain.handle(context);
+        return context.getSavedPago();
     }
 
     public Pago obtenerPagoPorId(String id) {
@@ -48,18 +62,6 @@ public class PagoService {
         }
         pago.setEstado("reembolsado");
         return pagoRepository.save(pago);
-    }
-
-    private void validatePago(Pago pago) {
-        if (pago == null) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "El cuerpo de la solicitud es obligatorio");
-        }
-        if (pago.getOrdenId() == null || pago.getOrdenId().trim().isEmpty()) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "El ordenId es obligatorio");
-        }
-        if (pago.getMonto() <= 0) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "El monto del pago debe ser mayor que cero");
-        }
     }
 
     private void validateId(String id, String message) {

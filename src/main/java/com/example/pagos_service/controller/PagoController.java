@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
@@ -25,6 +26,8 @@ import com.example.pagos_service.service.PagoService;
 @RequestMapping("/pagos")
 public class PagoController {
 
+    private static final String RETRY_REQUEST_HEADER = "X-Broker-Retry";
+    private static final String RETRY_REQUEST_VALUE = "true";
     private static final Logger logger = LoggerFactory.getLogger(PagoController.class);
     private final PagoService pagoService;
     private final PaymentRetryPublisher paymentRetryPublisher;
@@ -35,7 +38,8 @@ public class PagoController {
     }
 
     @PostMapping("/procesar")
-    public ResponseEntity<Map<String, Object>> procesarPago(@RequestBody Pago pago){
+    public ResponseEntity<Map<String, Object>> procesarPago(@RequestBody Pago pago,
+            @RequestHeader(name = RETRY_REQUEST_HEADER, required = false) String retryRequestHeader){
         try {
             Pago savedPago = pagoService.procesarPago(pago);
             logger.info("Pago procesado correctamente. id={}, ordenId={}, monto={}",
@@ -43,10 +47,10 @@ public class PagoController {
             return ResponseEntity.status(HttpStatus.CREATED)
                     .body(buildResponse(true, "Pago procesado correctamente", savedPago));
         } catch (ResponseStatusException exception) {
-            publishRetryOnServerError(pago, exception);
+            publishRetryOnServerError(pago, exception, retryRequestHeader);
             throw exception;
         } catch (Exception exception) {
-            publishRetryJob(pago, exception);
+            publishRetryJob(pago, exception, retryRequestHeader);
             throw exception;
         }
     }
@@ -79,15 +83,24 @@ public class PagoController {
         return response;
     }
 
-    private void publishRetryOnServerError(Pago pago, ResponseStatusException exception) {
+    private void publishRetryOnServerError(Pago pago, ResponseStatusException exception, String retryRequestHeader) {
         if (exception.getStatusCode().is5xxServerError()) {
-            publishRetryJob(pago, exception);
+            publishRetryJob(pago, exception, retryRequestHeader);
         }
     }
 
-    private void publishRetryJob(Pago pago, Exception exception) {
+    private void publishRetryJob(Pago pago, Exception exception, String retryRequestHeader) {
+        if (isBrokerRetryRequest(retryRequestHeader)) {
+            logger.warn("Retry request from broker failed without republishing. ordenId={}, error={}",
+                    pago != null ? pago.getOrdenId() : null, exception.getMessage());
+            return;
+        }
         logger.warn("Publishing payment retry job after create failure. ordenId={}, error={}",
                 pago != null ? pago.getOrdenId() : null, exception.getMessage());
         paymentRetryPublisher.publish(pago);
+    }
+
+    private boolean isBrokerRetryRequest(String retryRequestHeader) {
+        return RETRY_REQUEST_VALUE.equalsIgnoreCase(retryRequestHeader);
     }
 }

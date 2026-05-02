@@ -20,6 +20,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.web.server.ResponseStatusException;
 
 import com.example.pagos_service.messaging.PaymentRetryPublisher;
+import com.example.pagos_service.model.Pago;
 import com.example.pagos_service.service.PagoService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -44,7 +45,12 @@ class PagoControllerRetryPublishingTest {
     @Test
     void shouldPublishPaymentRetryMessageWhenUnexpectedErrorOccurs() throws Exception {
         when(pagoService.procesarPago(org.mockito.ArgumentMatchers.any()))
-                .thenThrow(new IllegalStateException("Mongo no disponible"));
+                .thenAnswer(invocation -> {
+                    Pago pago = invocation.getArgument(0);
+                    pago.setId(null);
+                    pago.setEstado("procesado");
+                    throw new IllegalStateException("Mongo no disponible");
+                });
 
         mockMvc.perform(post("/pagos/procesar")
                         .contentType(APPLICATION_JSON)
@@ -63,15 +69,12 @@ class PagoControllerRetryPublishingTest {
         JsonNode root = objectMapper.readTree(payloadCaptor.getValue());
         JsonNode data = root.get("data");
 
+        org.junit.jupiter.api.Assertions.assertEquals(1, root.size());
         org.junit.jupiter.api.Assertions.assertEquals("ord-123", data.get("ordenId").asText());
         org.junit.jupiter.api.Assertions.assertEquals(199.99d, data.get("monto").asDouble());
-        org.junit.jupiter.api.Assertions.assertEquals("pendiente", data.get("estado").asText());
-        org.junit.jupiter.api.Assertions.assertEquals("PENDING", root.get("sendEmail").get("status").asText());
-        org.junit.jupiter.api.Assertions.assertEquals("Pendiente de ejecutar el paso de envio de correo",
-                root.get("sendEmail").get("message").asText());
-        org.junit.jupiter.api.Assertions.assertEquals("PENDING", root.get("updateRetryJobs").get("status").asText());
-        org.junit.jupiter.api.Assertions.assertEquals("Pendiente de ejecutar el paso de actualizacion del retry job",
-                root.get("updateRetryJobs").get("message").asText());
+        org.junit.jupiter.api.Assertions.assertEquals("procesado", data.get("estado").asText());
+        org.junit.jupiter.api.Assertions.assertFalse(root.has("sendEmail"));
+        org.junit.jupiter.api.Assertions.assertFalse(root.has("updateRetryJobs"));
     }
 
     @Test
@@ -88,6 +91,26 @@ class PagoControllerRetryPublishingTest {
                                 }
                                 """))
                 .andExpect(status().isBadRequest());
+
+        verify(kafkaTemplate, never()).send(eq("payments_retry_jobs"), org.mockito.ArgumentMatchers.anyString());
+    }
+
+    @Test
+    void shouldNotRepublishRetryMessageWhenRequestComesFromBroker() throws Exception {
+        when(pagoService.procesarPago(org.mockito.ArgumentMatchers.any()))
+                .thenThrow(new IllegalStateException("Mongo no disponible"));
+
+        mockMvc.perform(post("/pagos/procesar")
+                        .header("X-Broker-Retry", "true")
+                        .contentType(APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "ordenId": "ord-broker-001",
+                                  "monto": 199.99,
+                                  "estado": "procesado"
+                                }
+                                """))
+                .andExpect(status().isInternalServerError());
 
         verify(kafkaTemplate, never()).send(eq("payments_retry_jobs"), org.mockito.ArgumentMatchers.anyString());
     }

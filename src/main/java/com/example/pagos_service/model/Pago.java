@@ -1,7 +1,11 @@
 package com.example.pagos_service.model;
 
+import java.math.BigDecimal;
+
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
+
+import com.fasterxml.jackson.annotation.JsonAlias;
 
 @Document(collection="pagos")
 public class Pago {
@@ -9,7 +13,10 @@ public class Pago {
     @Id
     private String id;
     private String ordenId;
-    private double monto;
+
+    @JsonAlias("amount")
+    private BigDecimal monto;
+
     private String estado;
 
     public String getId(){
@@ -28,11 +35,11 @@ public class Pago {
         this.ordenId = ordenId;
     }
 
-    public double getMonto(){
+    public BigDecimal getMonto(){
         return monto;
     }
 
-    public void setMonto(double monto){
+    public void setMonto(BigDecimal monto){
         this.monto = monto;
     }
 
